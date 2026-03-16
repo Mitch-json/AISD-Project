@@ -2,7 +2,7 @@
 
 **Source:** `owid-energy-data.csv` — 23,195 rows × 130 columns
 **Notebook:** `code.ipynb`
-**Final output:** `df_clean` — 114 countries, 1985–2024
+**Final output:** `df_clean` — 181 countries, 1985–2024
 
 ---
 
@@ -33,13 +33,13 @@ The raw OWID energy dataset covers every country and region in the world across 
 
 ## Step 3 — Country Quality Filter
 
-**Action:** Dropped countries where any of the four critical columns had more than 50% missing values. Kosovo was explicitly exempted.
+**Action:** Dropped countries where any of the four critical columns had more than 80% missing values. Kosovo was explicitly exempted.
 
 **Critical columns:** `iso_code`, `population`, `electricity_generation`, `electricity_demand`
 
-**Rationale:** A country missing more than half its data in any critical column cannot be reliably used for modelling. The 50% threshold is conservative enough to retain countries with partial data gaps while removing those with fundamentally incomplete records.
+**Rationale:** A country missing more than 80% of its data in any critical column cannot be reliably used for modelling. The 80% threshold is permissive enough to retain countries with partial data gaps (e.g. post-Soviet states whose data starts in the early 1990s) while removing those with fundamentally incomplete records.
 
-- 201 countries dropped → **114 countries retained**
+- Countries dropped → **181 countries retained**
 - **Kosovo exemption:** Kosovo is a real, independent country but has no internationally assigned ISO code due to its disputed recognition status. It was explicitly kept because the absence of an ISO code is a political artefact, not a data quality issue.
 
 ---
@@ -131,6 +131,49 @@ Leading NaNs are left as NaN — these represent years before a country started 
 
 ---
 
+---
+
+## Step 10 — Backward Trend Extrapolation for Leading NaNs
+
+**Columns:** `gdp`, `electricity_demand`, `electricity_generation`, `fossil_electricity`, `renewables_electricity`, `greenhouse_gas_emissions`
+
+**Action:** For each country with leading NaNs, fitted a linear trend on the first 5 available data points and extrapolated backward to fill the gap years. Values were clamped at zero to prevent physically impossible negatives. Countries with fewer than 2 data points used a constant back-fill (first known value). Countries with no data at all were left as NaN.
+
+**Rationale:** Leading NaNs in these columns represent years before a country began reporting — not true zeros. Economic activity, electricity demand, and emissions all existed before data collection started. Rather than fabricating values from scratch, the approach anchors extrapolation to each country's own observed trend, making the filled values consistent with the direction and magnitude of that country's real history. Linear extrapolation was chosen over compound growth (CAGR) because it is safer over gaps of up to 15 years — exponential back-projection can produce extreme values.
+
+---
+
+## Step 11 — GDP Imputation via Regional Median GDP per Capita
+
+**Action:** For countries with no GDP data across their entire history, imputed GDP as:
+`GDP = regional_median_GDP_per_capita(region, year) × population`
+
+**Rationale:** 44+ countries (mostly small territories and micro-states) have no World Bank GDP data at all — backward extrapolation cannot help them because there is nothing to extrapolate from. These countries do have economic activity; it simply was never reported to the World Bank. Using the regional median GDP per capita controls for regional economic development levels while scaling appropriately to each country's size via population. Median was chosen over mean to avoid distortion from very large or very small economies in the same region.
+
+**Region assignments:**
+
+| Region | Example countries |
+|---|---|
+| Latin America & Caribbean | Argentina, Brazil, Bermuda, Cayman Islands, Haiti |
+| Sub-Saharan Africa | Ethiopia, Kenya, Somalia, South Sudan, Reunion |
+| Middle East & North Africa | Egypt, Jordan, Sudan, Western Sahara, Yemen |
+| South & Southeast Asia | Bangladesh, Bhutan, East Timor, Maldives |
+| East Asia & Pacific | Australia, Fiji, Kiribati, Nauru, Papua New Guinea |
+| Eastern Europe & Central Asia | Armenia, Kosovo, Russia, Tajikistan |
+| Western Europe & North America | Canada, Falkland Islands, Faroe Islands, Gibraltar |
+
+---
+
+## Step 12 — Forward-Fill Remaining Interior/Trailing NaNs (Hydro & Biofuel)
+
+**Columns:** `hydro_electricity`, `biofuel_electricity`
+
+**Action:** Forward-filled the small number of remaining NaNs (37 and 39 respectively) per country.
+
+**Rationale:** After zero-filling leading NaNs in Step 9, the residual gaps in hydro and biofuel were confirmed to be interior or trailing — not leading. Interior gaps in hydro can occur due to drought years causing temporary reporting lapses; biofuel gaps reflect intermittent reporting in small countries. Forward-fill (carry last known value) is appropriate here: hydro capacity doesn't disappear, and biofuel contribution is stable enough that the prior year's value is a reasonable estimate.
+
+---
+
 ## Summary of Gap Filling
 
 | Step | Method | Columns |
@@ -141,11 +184,14 @@ Leading NaNs are left as NaN — these represent years before a country started 
 | 7 | Mathematical constraint | `fossil`, `renewables`, `nuclear`, `electricity_generation` |
 | 8 | Forward-fill (trailing only) | `gdp`, `electricity_demand`, `electricity_generation`, `nuclear_electricity`, `greenhouse_gas_emissions`, `coal_electricity` |
 | 9 | Zero-fill (leading only) | `coal`, `nuclear`, `hydro`, `biofuel_electricity` |
+| 10 | Backward linear trend extrapolation (per country) | `gdp`, `electricity_demand`, `electricity_generation`, `fossil_electricity`, `renewables_electricity`, `greenhouse_gas_emissions` |
+| 11 | Regional median GDP per capita × population | `gdp` (countries with no data at all) |
+| 12 | Forward-fill (interior/trailing) | `hydro_electricity`, `biofuel_electricity` |
 
 ---
 
 ## What Was Deliberately Left as NaN
 
-- **Leading NaNs in `gdp`, `electricity_demand`, `electricity_generation`, `greenhouse_gas_emissions`** — these represent years before a country had data. Imputing them would be fabrication.
+- **Countries with no data at all for non-GDP columns** — if a country has zero valid values for a column and no physical justification for zero-fill, it is left as NaN.
 - **Negative residuals from constraint imputation** — a computed negative signals a data inconsistency in the source. These are left as NaN rather than propagating bad values.
 - **Interior gaps in any column** — analysis confirmed there are virtually no interior gaps in the dataset after filtering. The one or two that exist are left as NaN.
